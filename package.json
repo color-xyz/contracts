@@ -1,0 +1,21 @@
+{
+  "name": "color-rgbclash-contracts",
+  "version": "1.0.0",
+  "description": "This is a collection of smart contracts built for the Color - RgbClash application. These contracts enable the creation, management, and trading of unique Color and organizing RgbClash games on EVM based blockchains.",
+  "keywords": [
+    "hardhat",
+    "ethereum",
+    "NFT",
+    "smart contracts",
+    "rgbclash",
+    "color"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.23.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.3.0"
+  }
+}
