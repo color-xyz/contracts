@@ -64,7 +64,7 @@ contract GroupGameEth is Ownable, ReentrancyGuard {
         require(_id <= nextId, "Invalid id");
         return games[_id].players;
     }
-
+    
     function getGame(uint256 _id)
     external view returns(Game memory) {
         require(_id <= nextId, "Invalid id");
@@ -116,7 +116,7 @@ contract GroupGameEth is Ownable, ReentrancyGuard {
         playerPlayedGameIds[msg.sender].pop();
         emit PlayerLeft(nextId, msg.sender);
     }
-
+    
     function sendRewards(
         uint256 _id,
         address[] calldata _recipients,
@@ -127,13 +127,11 @@ contract GroupGameEth is Ownable, ReentrancyGuard {
         require(_id < nextId, "Invalid id");
         require(_recipients.length == _amounts.length, "Length of recipients and amounts must match");
         require(_ids.length == _idAmounts.length, "Length of ids and amounts must match");
-        Game storage game = games[_id];
-        require(game.creationTime != 0, "Game has not started yet");
-        require(block.timestamp - game.creationTime < 15 * 60, "Rewards can only be sent in the first 15 minutes from the game start");
-        require(game.recipients.length == 0, "Rewards are already distributed");
+        require(games[_id].creationTime != 0, "Game has not started yet");
+        require(block.timestamp - games[_id].creationTime < 15 * 60, "Rewards can only be sent in the first 15 minutes from the game start");
+        require(games[_id].recipients.length == 0, "Rewards are already distributed");
 
-        uint256 recipientsLength = _recipients.length; 
-        for (uint256 i = 0; i < recipientsLength; i++) {
+        for (uint256 i = 0; i < _recipients.length; i++) {
             if(_recipients[i] == address(this)) {
                 feeBalance += _amounts[i];
             } else {
@@ -143,11 +141,11 @@ contract GroupGameEth is Ownable, ReentrancyGuard {
         }
 
         colorNftPouch.distributeRewards(_ids, _idAmounts);
-        game.recipients = _recipients;
-        game.amounts = _amounts;
-        game.ids = _ids;
-        game.idAmounts = _idAmounts;
-
+        // Maybe create a copy and assigning after results in less gas
+        games[_id].recipients = _recipients;
+        games[_id].amounts = _amounts;
+        games[_id].ids = _ids;
+        games[_id].idAmounts = _idAmounts;
         emit RewardsSent(_id, _recipients, _amounts, _ids, _idAmounts);
     }
 

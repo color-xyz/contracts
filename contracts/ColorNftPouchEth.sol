@@ -23,6 +23,7 @@ contract ColorNftPouchEth is IERC721Receiver, Ownable, ReentrancyGuard {
     event NftStaked(uint256 indexed _id);
     event NftUnstaked(uint256 indexed _id);
     event RewardsDistributed(uint256[] indexed _ids, uint256[] indexed _amounts);
+    event SetLastPlayedTime(uint256 indexed _id, uint256 indexed _time);
 
     constructor(IERC721 _nftContract) Ownable(msg.sender) {
         colorNft = _nftContract;
@@ -37,6 +38,14 @@ contract ColorNftPouchEth is IERC721Receiver, Ownable, ReentrancyGuard {
     function getNftSupply()
     external view returns(uint256) {
         return colorNft.balanceOf(address(this));
+    }
+
+    // TODO: access control
+    function setLastPlayedTime(uint256 _tokenId)
+    external {
+        nfts[_tokenId].lastPlayedTime = block.timestamp;
+
+        emit SetLastPlayedTime(_tokenId, block.timestamp);
     }
 
     function onERC721Received(address _operator, address _from, uint256 _tokenId, bytes calldata _data)
@@ -89,6 +98,7 @@ contract ColorNftPouchEth is IERC721Receiver, Ownable, ReentrancyGuard {
         emit DepositBoost(_tokenId, msg.value);
     }
 
+    // TODO: access control
     function claimRewards(uint256 _tokenId)
     external nonReentrant {
         NFT memory nft = nfts[_tokenId];

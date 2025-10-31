@@ -31,6 +31,7 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
     mapping(uint256 => address) approved;
     mapping(address => mapping(address => bool)) approvedForAll;
     mapping(address => uint256) freeMintBalance;
+    mapping(address => uint256) nonces; 
 
     constructor(uint256 _price) Ownable(msg.sender) {
         price = _price;
@@ -47,7 +48,7 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
             address(msg.sender),
             bytes(_name),
             bytes(_uri),
-            bytes32(nextId)
+            bytes32(nonces[msg.sender])
         );
         require(_verify(message, _signature), "Not verified");
 
@@ -55,6 +56,8 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
         nfts[nextId] = nft;
         balance[msg.sender]++;
         ownedIds[msg.sender].push(nextId);
+        
+        nonces[msg.sender]++;
 
         emit Transfer(address(0), msg.sender, nextId);
 
@@ -68,7 +71,7 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
             address(msg.sender),
             bytes(_name),
             bytes(_uri),
-            bytes32(nextId)
+            bytes32(nonces[msg.sender])
         );
         require(_verify(message, _signature), "Not verified");
 
@@ -78,6 +81,7 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
         ownedIds[msg.sender].push(nextId);
 
         freeMintBalance[msg.sender]--;
+        nonces[msg.sender]++;
 
         emit Transfer(address(0), msg.sender, nextId);
 
@@ -109,6 +113,11 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
         require(_address != address(0), "Invalid address");
         return freeMintBalance[_address];
     }
+
+    function getNonce(address user)
+    external view returns (uint256) {
+        return nonces[user];
+    }    
 
     function provideFreeMint(address _address) external onlyOwner {
         require(_address != address(0), "Invalid address");
