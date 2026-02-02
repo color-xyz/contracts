@@ -17,13 +17,15 @@ contract ColorNftPouchEth is IERC721Receiver, Ownable, ReentrancyGuard {
     }
     mapping(uint256 => NFT) public nfts;
     mapping(address => uint256[]) ownedIds;
+    mapping(address => bool) public authorizedDistributors;
+    uint256 public totalBoost;
 
     event RewardsClaimed(uint256 indexed _id, uint256 indexed _amount);
     event DepositBoost(uint256 indexed _id, uint256 indexed _amount);
     event NftStaked(uint256 indexed _id);
     event NftUnstaked(uint256 indexed _id);
     event RewardsDistributed(uint256[] indexed _ids, uint256[] indexed _amounts);
-    event SetLastPlayedTime(uint256 indexed _id, uint256 indexed _time);
+    event BoostsWithdrawn(uint256 indexed _amount);
 
     constructor(IERC721 _nftContract) Ownable(msg.sender) {
         colorNft = _nftContract;
@@ -40,12 +42,10 @@ contract ColorNftPouchEth is IERC721Receiver, Ownable, ReentrancyGuard {
         return colorNft.balanceOf(address(this));
     }
 
-    // TODO: access control
-    function setLastPlayedTime(uint256 _tokenId)
-    external {
-        nfts[_tokenId].lastPlayedTime = block.timestamp;
-
-        emit SetLastPlayedTime(_tokenId, block.timestamp);
+    function setAuthorizedDistributor(address distributor, bool authorized) 
+    external onlyOwner {
+        require(distributor != address(0), "Invalid address");
+        authorizedDistributors[distributor] = authorized;
     }
 
     function onERC721Received(address _operator, address _from, uint256 _tokenId, bytes calldata _data)
@@ -91,14 +91,23 @@ contract ColorNftPouchEth is IERC721Receiver, Ownable, ReentrancyGuard {
 
         nft.boost += msg.value;
         nfts[_tokenId] = nft;
-
-        (bool success, ) = owner().call{value: msg.value}("");
-        require(success, "Eth not arrived");
+        totalBoost += msg.value;
 
         emit DepositBoost(_tokenId, msg.value);
     }
 
-    // TODO: access control
+    function withdrawBoosts()
+    external onlyOwner nonReentrant {
+        require(totalBoost > 0, "No boosts to withdraw");
+        uint256 amount = totalBoost;
+        totalBoost = 0;
+
+        (bool success, ) = owner().call{value: amount}("");
+        require(success, "Withdraw failed");
+
+        emit BoostsWithdrawn(amount);
+    }
+
     function claimRewards(uint256 _tokenId)
     external nonReentrant {
         NFT memory nft = nfts[_tokenId];
@@ -118,6 +127,7 @@ contract ColorNftPouchEth is IERC721Receiver, Ownable, ReentrancyGuard {
 
     function distributeRewards(uint256[] calldata _ids, uint256[] calldata _amounts)
     external {
+        require(authorizedDistributors[msg.sender], "Not authorized");
         require(_ids.length == _amounts.length, "Length of ids and amounts must match");
         for (uint256 i = 0; i < _ids.length; i++) {
             nfts[_ids[i]].rewards += _amounts[i];

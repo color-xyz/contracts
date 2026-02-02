@@ -124,6 +124,18 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
         freeMintBalance[_address]++;
     }
 
+    function claimFreeMint(bytes calldata _signature) external nonReentrant {
+        bytes memory message = abi.encodePacked(
+            bytes("ClaimFreeMint"),
+            address(msg.sender),
+            bytes32(nonces[msg.sender])
+        );
+        require(_verify(message, _signature), "Invalid signature");
+
+        freeMintBalance[msg.sender]++;
+        nonces[msg.sender]++;
+    }
+
     function tokenURI(uint256 _id) external view returns (string memory) {
         require(_id < nextId, "Invalid token");
         return nfts[_id].uri;

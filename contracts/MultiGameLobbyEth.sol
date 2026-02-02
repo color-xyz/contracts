@@ -86,7 +86,8 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
     function createRoom(uint256 entryPrice, uint256 maxPlayerCount)
     external returns (uint256 roomId) {
         require(maxPlayerCount > 1, "At least 2 players required");
-        require(maxPlayerCount < maxPlayers, "Max players allowed exceeded");
+        require(maxPlayerCount <= maxPlayers, "Max players allowed exceeded");
+        require(entryPrice <= 10 ether, "Entry price exceeds 10 ETH maximum");
         roomId = nextRoomId++;
         Room storage room = rooms[roomId];
         room.entryPrice = entryPrice;
@@ -198,32 +199,51 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
         emit GameEnded(roomId, room.gameId);
     }
 
-    // Withdraws fees and reclaims ETH from rooms older than 15 days, starting from lastWithdrawnRoomId
-    function withdrawFees() external onlyOwner {
-        require(feeBalance > 0 || nextRoomId > 0, "No fees or rooms to process");
+    // Reclaims ETH from rooms older than 15 days, starting from lastWithdrawnRoomId
+    function _withdrawOldRooms(uint256 limit) internal returns (uint256) {
+        require(nextRoomId > 0, "No rooms to process");
         uint256 totalReclaimed = 0;
         uint256 cutoff = block.timestamp - 15 days;
         uint256 roomId = lastWithdrawnRoomId;
+        uint256 processedCount = 0;
+
         for (; roomId < nextRoomId; roomId++) {
+            if (limit > 0 && processedCount >= limit) {
+                break;
+            }
+
             Room storage room = rooms[roomId];
             if (room.creationTime >= cutoff) {
                 break;
             }
+
             if (room.players.length > 0) {
                 uint256 roomValue = room.entryPrice * room.players.length;
                 if (roomValue > 0) {
                     totalReclaimed += roomValue;
                     delete room.players;
                     room.gameStartTime = 0;
+                    processedCount++;
                 }
             }
         }
-        lastWithdrawnRoomId = roomId - 1;
-        uint256 payout = feeBalance + totalReclaimed;
-        require(payout > 0, "Nothing to withdraw");
+        lastWithdrawnRoomId = roomId;
+        return totalReclaimed;
+    }
+
+    function withdrawOldRooms(uint256 limit) external onlyOwner {
+        uint256 reclaimed = _withdrawOldRooms(limit);
+        require(reclaimed > 0, "Nothing to reclaim");
+        (bool success, ) = msg.sender.call{value: reclaimed}("");
+        require(success, "Withdraw failed");
+    }
+
+    function withdrawFees() external onlyOwner {
+        require(feeBalance > 0, "No fees to withdraw");
+        uint256 payout = feeBalance;
+        feeBalance = 0;
         (bool success, ) = msg.sender.call{value: payout}("");
         require(success, "Withdraw failed");
-        feeBalance = 0;
     }
 
     function _verify(bytes memory message, bytes memory signature)
