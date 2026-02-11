@@ -18,6 +18,24 @@ interface IColorNftPouch {
  * @notice Manages tournament registrations, prize pools, and reward distributions
  */
 contract TournamentManager is Ownable, ReentrancyGuard {
+    // Custom Errors
+    error InvalidPouchAddress();
+    error TournamentNotActive();
+    error TournamentAlreadyFinalized();
+    error AlreadyRegistered();
+    error TournamentFull();
+    error RegistrationDeadlinePassed();
+    error InvalidSignature();
+    error IncorrectEntryFee();
+    error NotRegistered();
+    error ArrayLengthMismatch();
+    error TransferFailed();
+    error DistributionExceedsAvailable();
+    error NothingToWithdraw();
+    error NoClaimableRefund();
+    error InvalidParameter();
+    error InvalidDeadline();
+    error NotARegisteredPlayer();
     struct TournamentData {
         uint256 tournamentId;
         address creator;
@@ -38,6 +56,7 @@ contract TournamentManager is Ownable, ReentrancyGuard {
     mapping(uint256 => mapping(address => bool)) public hasRegistered;
     mapping(uint256 => address[]) public tournamentPlayers;
     mapping(address => uint256) public nonces;
+    mapping(uint256 => mapping(address => uint256)) public claimableRefunds;
     
     uint256 public nextTournamentId = 1;
     uint256 public platformFeeBalance;
@@ -59,9 +78,13 @@ contract TournamentManager is Ownable, ReentrancyGuard {
     event TournamentFinalized(uint256 indexed tournamentId, uint256 totalDistributed, uint256 platformFee);
     event TournamentCancelled(uint256 indexed tournamentId, uint256 totalRefunded);
     event PlatformFeesWithdrawn(uint256 amount);
+    event TransferFailedAddedToFees(uint256 indexed tournamentId, address indexed recipient, uint256 amount);
+    event RefundFailedClaimable(uint256 indexed tournamentId, address indexed player, uint256 amount);
+    event RefundClaimed(uint256 indexed tournamentId, address indexed player, uint256 amount);
+    event ColorNftPouchUpdated(address indexed oldPouch, address indexed newPouch);
 
     constructor(address _colorNftPouch) Ownable(msg.sender) {
-        require(_colorNftPouch != address(0), "Invalid pouch address");
+        if(_colorNftPouch == address(0)) revert InvalidPouchAddress();
         colorNftPouch = _colorNftPouch;
     }
 
@@ -70,8 +93,10 @@ contract TournamentManager is Ownable, ReentrancyGuard {
      * @param _colorNftPouch New ColorNftPouch contract address
      */
     function setColorNftPouch(address _colorNftPouch) external onlyOwner {
-        require(_colorNftPouch != address(0), "Invalid pouch address");
+        if(_colorNftPouch == address(0)) revert InvalidPouchAddress();
+        address oldPouch = colorNftPouch;
         colorNftPouch = _colorNftPouch;
+        emit ColorNftPouchUpdated(oldPouch, _colorNftPouch);
     }
 
     /**
@@ -92,7 +117,11 @@ contract TournamentManager is Ownable, ReentrancyGuard {
         uint8 platformFeePercent,
         uint8 nftRewardPercent
     ) external onlyOwner returns (uint256) {
-        require(registrationDeadline < startTime || startTime == 0, "Registration must end before start");
+        if(registrationDeadline <= block.timestamp) revert InvalidDeadline();
+        if(startTime != 0 && registrationDeadline >= startTime) revert InvalidDeadline();
+        if(maxPlayers < 2) revert InvalidParameter();
+        if(platformFeePercent > 100) revert InvalidParameter();
+        if(nftRewardPercent > 100) revert InvalidParameter();
         
         uint256 tournamentId = nextTournamentId++;
         
@@ -123,17 +152,17 @@ contract TournamentManager is Ownable, ReentrancyGuard {
     function registerPlayer(uint256 tournamentId, bytes calldata signature) external payable nonReentrant {
         TournamentData storage tournament = tournaments[tournamentId];
         
-        require(tournament.isActive, "Tournament not active");
-        require(!tournament.isFinalized, "Tournament already finalized");
-        require(!hasRegistered[tournamentId][msg.sender], "Already registered");
-        require(tournamentPlayers[tournamentId].length < tournament.maxPlayers, "Tournament is full");
-        require(block.timestamp < tournament.registrationDeadline, "Registration deadline passed");
+        if(!tournament.isActive) revert TournamentNotActive();
+        if(tournament.isFinalized) revert TournamentAlreadyFinalized();
+        if(hasRegistered[tournamentId][msg.sender]) revert AlreadyRegistered();
+        if(tournamentPlayers[tournamentId].length >= tournament.maxPlayers) revert TournamentFull();
+        if(block.timestamp >= tournament.registrationDeadline) revert RegistrationDeadlinePassed();
         
         // Verify signature
         bytes memory message = abi.encodePacked("RegisterTournament", msg.sender, tournamentId, nonces[msg.sender]);
-        require(_verify(message, signature), "Invalid signature");
+        if(!_verify(message, signature)) revert InvalidSignature();
         
-        require(msg.value == tournament.entryFee, "Incorrect entry fee");
+        if(msg.value != tournament.entryFee) revert IncorrectEntryFee();
         if (msg.value > 0) {
             tournament.prizePool += msg.value;
         }
@@ -152,14 +181,14 @@ contract TournamentManager is Ownable, ReentrancyGuard {
     function unregisterPlayer(uint256 tournamentId, bytes calldata signature) external nonReentrant {
         TournamentData storage tournament = tournaments[tournamentId];
         
-        require(tournament.isActive, "Tournament not active");
-        require(!tournament.isFinalized, "Tournament already started");
-        require(hasRegistered[tournamentId][msg.sender], "Not registered");
-        require(block.timestamp < tournament.registrationDeadline, "Registration deadline passed");
+        if(!tournament.isActive) revert TournamentNotActive();
+        if(tournament.isFinalized) revert TournamentAlreadyFinalized();
+        if(!hasRegistered[tournamentId][msg.sender]) revert NotRegistered();
+        if(block.timestamp >= tournament.registrationDeadline) revert RegistrationDeadlinePassed();
         
         // Verify signature
         bytes memory message = abi.encodePacked("UnregisterTournament", msg.sender, tournamentId, nonces[msg.sender]);
-        require(_verify(message, signature), "Invalid signature");
+        if(!_verify(message, signature)) revert InvalidSignature();
         
         hasRegistered[tournamentId][msg.sender] = false;
         
@@ -179,7 +208,7 @@ contract TournamentManager is Ownable, ReentrancyGuard {
             tournament.prizePool -= refundAmount;
             
             (bool success, ) = msg.sender.call{value: refundAmount}("");
-            require(success, "Refund failed");
+            if(!success) revert TransferFailed();
             
             emit PlayerUnregistered(tournamentId, msg.sender, refundAmount);
         } else {
@@ -196,11 +225,19 @@ contract TournamentManager is Ownable, ReentrancyGuard {
     function claimAbandonedTournamentRefund(uint256 tournamentId) external nonReentrant {
         TournamentData storage tournament = tournaments[tournamentId];
         
-        require(tournament.isActive, "Tournament not active");
-        require(!tournament.isFinalized, "Tournament already finalized");
-        require(hasRegistered[tournamentId][msg.sender], "Not registered");
-        require(tournament.startTime != 0, "No start time set");
-        require(block.timestamp >= tournament.startTime + 8 hours, "8 hours not passed since start time");
+        if(!tournament.isActive) revert TournamentNotActive();
+        if(tournament.isFinalized) revert TournamentAlreadyFinalized();
+        if(!hasRegistered[tournamentId][msg.sender]) revert NotRegistered();
+        
+        bool canClaim = false;
+        if (tournament.startTime != 0) {
+            // Fixed start time: use startTime + 8 hours
+            canClaim = block.timestamp >= tournament.startTime + 8 hours;
+        } else {
+            // Flexible start: use registrationDeadline + 1 day
+            canClaim = block.timestamp >= tournament.registrationDeadline + 1 days;
+        }
+        if(!canClaim) revert InvalidParameter();
         
         hasRegistered[tournamentId][msg.sender] = false;
         
@@ -220,7 +257,7 @@ contract TournamentManager is Ownable, ReentrancyGuard {
             tournament.prizePool -= refundAmount;
             
             (bool success, ) = msg.sender.call{value: refundAmount}("");
-            require(success, "Refund failed");
+            if(!success) revert TransferFailed();
             
             emit PlayerRefunded(tournamentId, msg.sender, refundAmount);
         } else {
@@ -235,9 +272,9 @@ contract TournamentManager is Ownable, ReentrancyGuard {
     function addIncentive(uint256 tournamentId) external payable {
         TournamentData storage tournament = tournaments[tournamentId];
         
-        require(tournament.isActive, "Tournament not active");
-        require(!tournament.isFinalized, "Tournament already finalized");
-        require(msg.value > 0, "Must send incentive");
+        if(!tournament.isActive) revert TournamentNotActive();
+        if(tournament.isFinalized) revert TournamentAlreadyFinalized();
+        if(msg.value == 0) revert InvalidParameter();
         
         tournament.incentivePool += msg.value;
         
@@ -261,10 +298,14 @@ contract TournamentManager is Ownable, ReentrancyGuard {
     ) external onlyOwner nonReentrant {
         TournamentData storage tournament = tournaments[tournamentId];
         
-        require(tournament.isActive, "Tournament not active");
-        require(!tournament.isFinalized, "Already finalized");
-        require(winners.length == playerAmounts.length, "Winners/amounts mismatch");
-        require(nftIds.length == nftAmounts.length, "NFT IDs/amounts mismatch");
+        if(!tournament.isActive) revert TournamentNotActive();
+        if(tournament.isFinalized) revert TournamentAlreadyFinalized();
+        if(winners.length != playerAmounts.length) revert ArrayLengthMismatch();
+        if(nftIds.length != nftAmounts.length) revert ArrayLengthMismatch();
+        
+        for (uint256 i = 0; i < winners.length; i++) {
+            if(!hasRegistered[tournamentId][winners[i]]) revert NotARegisteredPlayer();
+        }
         
         // Calculate platform fee (% of entry fees only, not incentives)
         uint256 platformFee = (tournament.prizePool * tournament.platformFeePercent) / 100;
@@ -283,7 +324,7 @@ contract TournamentManager is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @dev Internal function to distribute rewards
+     * @dev Internal function to distribute rewards with credit-on-failure
      * @param tournamentId ID of the tournament
      * @param winners Array of winner addresses
      * @param playerAmounts Array of amounts for each winner
@@ -300,12 +341,15 @@ contract TournamentManager is Ownable, ReentrancyGuard {
         uint256[] calldata nftAmounts,
         uint256 platformFee
     ) internal returns (uint256 totalDistributed) {
-        // Distribute to players and calculate total
         for (uint256 i = 0; i < winners.length; i++) {
             if (playerAmounts[i] > 0) {
                 totalDistributed += playerAmounts[i];
                 (bool success, ) = winners[i].call{value: playerAmounts[i]}("");
-                require(success, "Player transfer failed");
+                if (!success) {
+                    // Add to platform fees if transfer fails (malicious/non-receivable)
+                    platformFeeBalance += playerAmounts[i];
+                    emit TransferFailedAddedToFees(tournamentId, winners[i], playerAmounts[i]);
+                }
             }
         }
         
@@ -321,7 +365,7 @@ contract TournamentManager is Ownable, ReentrancyGuard {
             if (totalNftRewards > 0) {
                 totalDistributed += totalNftRewards;
                 (bool nftSuccess, ) = colorNftPouch.call{value: totalNftRewards}("");
-                require(nftSuccess, "NFT pouch transfer failed");
+                if(!nftSuccess) revert TransferFailed();
                 
                 // Call pouch to distribute to NFT owners using parallel arrays
                 IColorNftPouch(colorNftPouch).distributeRewards(nftIds, nftAmounts);
@@ -335,38 +379,45 @@ contract TournamentManager is Ownable, ReentrancyGuard {
         // Prize pool and incentive pool are tracked on-chain through register/unregister
         TournamentData storage tournament = tournaments[tournamentId];
         uint256 totalAvailable = tournament.prizePool + tournament.incentivePool;
-        require(totalDistributed + platformFee <= totalAvailable, "Distribution exceeds available funds");
+        if(totalDistributed + platformFee > totalAvailable) revert DistributionExceedsAvailable();
     }
 
     /**
-     * @notice Cancel tournament and refund all players
+     * @notice Cancel tournament and refund all players with credit-on-failure
      * @param tournamentId ID of the tournament to cancel
      */
     function cancelTournament(uint256 tournamentId) external onlyOwner nonReentrant {
         TournamentData storage tournament = tournaments[tournamentId];
-        require(tournament.isActive, "Tournament not active");
-        require(!tournament.isFinalized, "Already finalized");
+        if(!tournament.isActive) revert TournamentNotActive();
+        if(tournament.isFinalized) revert TournamentAlreadyFinalized();
         
         tournament.isActive = false;
         
         uint256 totalRefunded = 0;
         
-        // Refund all registered players
         if (tournament.entryFee > 0) {
             address[] storage players = tournamentPlayers[tournamentId];
             for (uint256 i = 0; i < players.length; i++) {
                 if (hasRegistered[tournamentId][players[i]]) {
                     (bool success, ) = players[i].call{value: tournament.entryFee}("");
-                    require(success, "Refund failed");
+                    if (!success) {
+                        // Store as claimable if transfer fails (e.g., insufficient contract balance)
+                        claimableRefunds[tournamentId][players[i]] += tournament.entryFee;
+                        emit RefundFailedClaimable(tournamentId, players[i], tournament.entryFee);
+                    }
                     totalRefunded += tournament.entryFee;
                 }
             }
         }
         
-        // Refund third party incentives to creator
+        // Refund incentive to creator with claimable fallback
         if (tournament.incentivePool > 0) {
             (bool success, ) = tournament.creator.call{value: tournament.incentivePool}("");
-            require(success, "Incentive refund failed");
+            if (!success) {
+                // Store as claimable if transfer fails
+                claimableRefunds[tournamentId][tournament.creator] += tournament.incentivePool;
+                emit RefundFailedClaimable(tournamentId, tournament.creator, tournament.incentivePool);
+            }
             totalRefunded += tournament.incentivePool;
         }
         
@@ -374,10 +425,28 @@ contract TournamentManager is Ownable, ReentrancyGuard {
     }
 
     /**
+     * @notice Claim refund from a cancelled tournament if transfer failed
+     * @param tournamentId ID of the tournament
+     */
+    function claimRefund(uint256 tournamentId) external nonReentrant {
+        if(!hasRegistered[tournamentId][msg.sender]) revert NotRegistered();
+        
+        uint256 amount = claimableRefunds[tournamentId][msg.sender];
+        if(amount == 0) revert NoClaimableRefund();
+        
+        claimableRefunds[tournamentId][msg.sender] = 0;
+        
+        (bool success, ) = msg.sender.call{value: amount}("");
+        if(!success) revert TransferFailed();
+        
+        emit RefundClaimed(tournamentId, msg.sender, amount);
+    }
+
+    /**
      * @notice Withdraw platform fees and reclaim funds from old tournaments
      */
     function withdrawPlatformFees() external onlyOwner {
-        require(platformFeeBalance > 0 || nextTournamentId > 1, "No fees or tournaments to process");
+        if(platformFeeBalance == 0 && nextTournamentId <= 1) revert NothingToWithdraw();
         
         uint256 totalReclaimed = 0;
         uint256 cutoff = block.timestamp - 15 days;
@@ -410,12 +479,12 @@ contract TournamentManager is Ownable, ReentrancyGuard {
         lastWithdrawnTournamentId = tournamentId - 1;
         
         uint256 payout = platformFeeBalance + totalReclaimed;
-        require(payout > 0, "Nothing to withdraw");
+        if(payout == 0) revert NothingToWithdraw();
         
         platformFeeBalance = 0;
         
         (bool success, ) = owner().call{value: payout}("");
-        require(success, "Withdraw failed");
+        if(!success) revert TransferFailed();
         
         emit PlatformFeesWithdrawn(payout);
     }

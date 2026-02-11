@@ -8,6 +8,26 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
+    // Custom Errors
+    error InvalidMaxPlayers();
+    error InvalidEntryPrice();
+    error RoomDoesNotExist();
+    error NotPlayerInRoom();
+    error AlreadyPlayerInRoom();
+    error GameAlreadyStarted();
+    error RoomIsFull();
+    error IncorrectEntryPrice();
+    error InvalidSignature();
+    error CannotLeaveAfterGameStarted();
+    error TransferFailed();
+    error GameNotActive();
+    error ArrayLengthMismatch();
+    error NotValidRecipient();
+    error RewardsExceedEntryFees();
+    error NoRoomsToProcess();
+    error NothingToReclaim();
+    error NoFeesToWithdraw();
+    error InsufficientNftFunding();
     struct Room {
         uint256 entryPrice;
         uint256 maxPlayerCount;
@@ -34,19 +54,21 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
     event PlayerLeft(uint256 indexed roomId, address indexed player);
     event RewardsDistributed(uint256 indexed roomId, uint256 indexed gameId, address[] recipients, uint256[] amounts);
     event GameEnded(uint256 indexed roomId, uint256 indexed gameId);
+    event OldRoomsWithdrawn(uint256 amount);
+    event FeesWithdrawn(uint256 amount);
 
     modifier onlyPlayer(uint256 roomId) {
-        require(_isPlayerInRoom(roomId, msg.sender), "Not a player in this room");
+        if(!_isPlayerInRoom(roomId, msg.sender)) revert NotPlayerInRoom();
         _;
     }
 
     modifier onlyNotPlayer(uint256 roomId) {
-        require(!_isPlayerInRoom(roomId, msg.sender), "Already a player in this room");
+        if(_isPlayerInRoom(roomId, msg.sender)) revert AlreadyPlayerInRoom();
         _;
     }
 
     modifier roomExists(uint256 roomId) {
-        require(roomId < nextRoomId, "Room does not exist");
+        if(roomId >= nextRoomId) revert RoomDoesNotExist();
         _;
     }
 
@@ -85,9 +107,9 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
 
     function createRoom(uint256 entryPrice, uint256 maxPlayerCount)
     external returns (uint256 roomId) {
-        require(maxPlayerCount > 1, "At least 2 players required");
-        require(maxPlayerCount <= maxPlayers, "Max players allowed exceeded");
-        require(entryPrice <= 10 ether, "Entry price exceeds 10 ETH maximum");
+        if(maxPlayerCount <= 1) revert InvalidMaxPlayers();
+        if(maxPlayerCount > maxPlayers) revert InvalidMaxPlayers();
+        if(entryPrice > 10 ether) revert InvalidEntryPrice();
         roomId = nextRoomId++;
         Room storage room = rooms[roomId];
         room.entryPrice = entryPrice;
@@ -102,12 +124,12 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
     function joinRoom(uint256 roomId, bytes calldata signature)
     external payable roomExists(roomId) nonReentrant onlyNotPlayer(roomId) {
         Room storage room = rooms[roomId];
-        require(room.gameStartTime == 0 , "Game already started");
-        require(room.players.length < room.maxPlayerCount, "Room is full");
-        require(msg.value == room.entryPrice, "Insufficient entry price");
+        if(room.gameStartTime != 0) revert GameAlreadyStarted();
+        if(room.players.length >= room.maxPlayerCount) revert RoomIsFull();
+        if(msg.value != room.entryPrice) revert IncorrectEntryPrice();
         // Verify signature
         bytes memory message = abi.encodePacked("JoinRoom", msg.sender, roomId, nonces[msg.sender]);
-        require(_verify(message, signature), "Not verified");
+        if(!_verify(message, signature)) revert InvalidSignature();
         room.players.push(msg.sender);
 
         nonces[msg.sender]++;
@@ -117,7 +139,7 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
     function leaveRoom(uint256 roomId) 
     external roomExists(roomId) nonReentrant onlyPlayer(roomId) {
         Room storage room = rooms[roomId];
-        require(room.gameStartTime == 0, "Cannot leave after game started");
+        if(room.gameStartTime != 0) revert CannotLeaveAfterGameStarted();
         
         address[] storage players = room.players;
         for (uint256 i = 0; i < players.length; i++) {
@@ -129,7 +151,7 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
         }
         
         (bool success, ) = msg.sender.call{value: room.entryPrice}("");
-        require(success, "Refund failed");
+        if(!success) revert TransferFailed();
         
         emit PlayerLeft(roomId, msg.sender);
     }
@@ -137,13 +159,13 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
     function startGame(uint256 roomId, bytes calldata signature)
     external roomExists(roomId) nonReentrant {
         Room storage room = rooms[roomId];
-        require(room.gameStartTime == 0, "Game already started");
-        require(room.players.length >= 2, "At least 2 players required to start");
+        if(room.gameStartTime != 0) revert GameAlreadyStarted();
+        if(room.players.length < 2) revert InvalidMaxPlayers();
         
         bytes memory message = abi.encodePacked("StartGame", msg.sender, roomId, room.gameId, nonces[msg.sender]);
 
         // Verify signature is from owner (deployer)
-        require(_verify(message, signature), "Invalid signature");
+        if(!_verify(message, signature)) revert InvalidSignature();
         
         room.gameStartTime = block.timestamp;
 
@@ -159,24 +181,35 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
         uint256[] calldata idAmounts
     ) external onlyOwner roomExists(roomId) nonReentrant {
         Room storage room = rooms[roomId];
-        require(room.gameStartTime != 0, "Game not active");
-        require(recipients.length == amounts.length, "Mismatched arrays");
-        require(ids.length == idAmounts.length, "Length of ids and amounts must match");
+        if(room.gameStartTime == 0) revert GameNotActive();
+        if(recipients.length != amounts.length) revert ArrayLengthMismatch();
+        if(ids.length != idAmounts.length) revert ArrayLengthMismatch();
+        
         // Only allow players or the pouch to receive rewards
         uint256 totalReward = 0;
+        uint256 totalPouchAmount = 0;
         for (uint256 i = 0; i < recipients.length; i++) {
-            require(
-                _isPlayerInRoom(roomId, recipients[i]) || recipients[i] == address(colorNftPouch),
-                "Not valid recipient"
-            );
+            if(!_isPlayerInRoom(roomId, recipients[i]) && recipients[i] != address(colorNftPouch)) {
+                revert NotValidRecipient();
+            }
             totalReward += amounts[i];
+            if (recipients[i] == address(colorNftPouch)) {
+                totalPouchAmount += amounts[i];
+            }
         }
         uint256 totalEntry = room.entryPrice * room.players.length;
-        require(totalReward <= totalEntry, "Rewards exceed entry fees");
+        if(totalReward > totalEntry) revert RewardsExceedEntryFees();
+        
+        uint256 totalNftRewards = 0;
+        for (uint256 i = 0; i < idAmounts.length; i++) {
+            totalNftRewards += idAmounts[i];
+        }
+        if(totalNftRewards > totalPouchAmount) revert InsufficientNftFunding();
+        
         // Distribute rewards
         for (uint256 i = 0; i < recipients.length; i++) {
             (bool success, ) = recipients[i].call{value: amounts[i]}("");
-            require(success, "Eth not arrived");
+            if(!success) revert TransferFailed();
         }
         // Accumulate fee as leftover
         if (totalEntry > totalReward) {
@@ -201,7 +234,7 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
 
     // Reclaims ETH from rooms older than 15 days, starting from lastWithdrawnRoomId
     function _withdrawOldRooms(uint256 limit) internal returns (uint256) {
-        require(nextRoomId > 0, "No rooms to process");
+        if(nextRoomId == 0) revert NoRoomsToProcess();
         uint256 totalReclaimed = 0;
         uint256 cutoff = block.timestamp - 15 days;
         uint256 roomId = lastWithdrawnRoomId;
@@ -233,17 +266,19 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
 
     function withdrawOldRooms(uint256 limit) external onlyOwner {
         uint256 reclaimed = _withdrawOldRooms(limit);
-        require(reclaimed > 0, "Nothing to reclaim");
+        if(reclaimed == 0) revert NothingToReclaim();
         (bool success, ) = msg.sender.call{value: reclaimed}("");
-        require(success, "Withdraw failed");
+        if(!success) revert TransferFailed();
+        emit OldRoomsWithdrawn(reclaimed);
     }
 
     function withdrawFees() external onlyOwner {
-        require(feeBalance > 0, "No fees to withdraw");
+        if(feeBalance == 0) revert NoFeesToWithdraw();
         uint256 payout = feeBalance;
         feeBalance = 0;
         (bool success, ) = msg.sender.call{value: payout}("");
-        require(success, "Withdraw failed");
+        if(!success) revert TransferFailed();
+        emit FeesWithdrawn(payout);
     }
 
     function _verify(bytes memory message, bytes memory signature)

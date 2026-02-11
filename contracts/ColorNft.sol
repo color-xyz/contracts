@@ -14,6 +14,17 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 
 contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
+    // Custom Errors
+    error InvalidAddress();
+    error InsufficientPayment();
+    error InvalidSignature();
+    error NoFreeMints();
+    error TransferFailed();
+    error InvalidTokenId();
+    error NotApproved();
+    error InvalidRecipient();
+    error TokenNotOwnedBySource();
+    error InvalidReceiver();
     string public constant name = "Color";
     string public constant symbol = "COL";
     uint256 public nextId;
@@ -31,7 +42,10 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
     mapping(uint256 => address) approved;
     mapping(address => mapping(address => bool)) approvedForAll;
     mapping(address => uint256) freeMintBalance;
-    mapping(address => uint256) nonces; 
+    mapping(address => uint256) nonces;
+    
+    event PriceUpdated(uint256 newPrice);
+    event Withdrawn(uint256 amount);
 
     constructor(uint256 _price) Ownable(msg.sender) {
         price = _price;
@@ -39,10 +53,11 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
 
     function setPrice(uint256 _price) onlyOwner external {
         price = _price;
+        emit PriceUpdated(_price);
     }
 
     function mint(string memory _name, string memory _uri, bytes calldata _signature) external nonReentrant payable returns (uint256) {
-        require(msg.value >= price, "Not enough eth sent");
+        if(msg.value < price) revert InsufficientPayment();
         bytes memory message = abi.encodePacked(
             bytes("Mint"),
             address(msg.sender),
@@ -50,7 +65,7 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
             bytes(_uri),
             bytes32(nonces[msg.sender])
         );
-        require(_verify(message, _signature), "Not verified");
+        if(!_verify(message, _signature)) revert InvalidSignature();
 
         NFT memory nft = NFT(msg.sender, _uri, _name);
         nfts[nextId] = nft;
@@ -65,7 +80,7 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
     }
 
     function freeMint(string memory _name, string memory _uri, bytes calldata _signature) external nonReentrant returns (uint256) {
-        require(freeMintBalance[msg.sender] > 0, "No free mints available");
+        if(freeMintBalance[msg.sender] == 0) revert NoFreeMints();
         bytes memory message = abi.encodePacked(
             bytes("Mint"),
             address(msg.sender),
@@ -73,7 +88,7 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
             bytes(_uri),
             bytes32(nonces[msg.sender])
         );
-        require(_verify(message, _signature), "Not verified");
+        if(!_verify(message, _signature)) revert InvalidSignature();
 
         NFT memory nft = NFT(msg.sender, _uri, _name);
         nfts[nextId] = nft;
@@ -88,29 +103,30 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
         return nextId++;
     }
 
-    function withdraw() external onlyOwner payable {
-
-        (bool success, ) = msg.sender.call{value: address(this).balance}("");
-        require(success, "Withdraw was not successful");
+    function withdraw() external onlyOwner {
+        uint256 amount = address(this).balance;
+        (bool success, ) = msg.sender.call{value: amount}("");
+        if(!success) revert TransferFailed();
+        emit Withdrawn(amount);
     }
 
     function ownerOf(uint256 _id) external view returns (address) {
-        require(_id < nextId, "Invalid token id");
+        if(_id >= nextId) revert InvalidTokenId();
         return nfts[_id].owner;
     }
 
     function getOwnedIds(address _owner) external view returns (uint256[] memory) {
-        require(_owner != address(0), "Invalid address");
+        if(_owner == address(0)) revert InvalidAddress();
         return ownedIds[_owner];
     }
 
     function balanceOf(address _owner) external view returns (uint256) {
-        require(_owner != address(0), "Invalid address");
+        if(_owner == address(0)) revert InvalidAddress();
         return balance[_owner];
     }
 
     function getFreeMintBalance(address _address) external view returns (uint256) {
-        require(_address != address(0), "Invalid address");
+        if(_address == address(0)) revert InvalidAddress();
         return freeMintBalance[_address];
     }
 
@@ -120,7 +136,7 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
     }    
 
     function provideFreeMint(address _address) external onlyOwner {
-        require(_address != address(0), "Invalid address");
+        if(_address == address(0)) revert InvalidAddress();
         freeMintBalance[_address]++;
     }
 
@@ -130,19 +146,19 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
             address(msg.sender),
             bytes32(nonces[msg.sender])
         );
-        require(_verify(message, _signature), "Invalid signature");
+        if(!_verify(message, _signature)) revert InvalidSignature();
 
         freeMintBalance[msg.sender]++;
         nonces[msg.sender]++;
     }
 
     function tokenURI(uint256 _id) external view returns (string memory) {
-        require(_id < nextId, "Invalid token");
+        if(_id >= nextId) revert InvalidTokenId();
         return nfts[_id].uri;
     }
 
     function tokenName(uint256 _id) external view returns (string memory) {
-        require(_id < nextId, "Invalid token");
+        if(_id >= nextId) revert InvalidTokenId();
         return nfts[_id].name;
     }
 
@@ -153,37 +169,39 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
     }
 
     function getApproved(uint256 _tokenId) external view returns (address) {
-        require(_tokenId < nextId, "Invalid token");
+        if(_tokenId >= nextId) revert InvalidTokenId();
         return approved[_tokenId];
     }
 
     function isApprovedForAll(address _owner, address _operator) external view returns (bool) {
-        require(_owner != address(0), "Invalid address");
-        require(_operator != address(0), "Invalid address");
+        if(_owner == address(0)) revert InvalidAddress();
+        if(_operator == address(0)) revert InvalidAddress();
         return approvedForAll[_owner][_operator];
     }
 
     function approve(address _approved, uint256 _tokenId) external {
-        require(nfts[_tokenId].owner == msg.sender || approvedForAll[nfts[_tokenId].owner][msg.sender], "Not approved!");
+        if(_tokenId >= nextId) revert InvalidTokenId();
+        address owner = nfts[_tokenId].owner;
+        if(owner != msg.sender && !approvedForAll[owner][msg.sender]) revert NotApproved();
 
         approved[_tokenId] = _approved;
 
-        emit Approval(msg.sender, _approved, _tokenId);
+        emit Approval(owner, _approved, _tokenId);
     }
 
     function setApprovalForAll(address _operator, bool _approved) external {
-        require(_operator != address(0), "Invalid address!");
+        if(_operator == address(0)) revert InvalidAddress();
         approvedForAll[msg.sender][_operator] = _approved;
 
         emit ApprovalForAll(msg.sender, _operator, _approved);
     }
 
     function transferFrom(address _from, address _to, uint256 _tokenId) public {
-        require(_to != address(0), "Invalid recipient");
-        require(_tokenId < nextId, "Invalid token");
-        require(nfts[_tokenId].owner == _from, "Token is not owned by source address");
+        if(_to == address(0)) revert InvalidRecipient();
+        if(_tokenId >= nextId) revert InvalidTokenId();
+        if(nfts[_tokenId].owner != _from) revert TokenNotOwnedBySource();
         if (msg.sender != _from && msg.sender != approved[_tokenId]) {
-            require(approvedForAll[_from][msg.sender], "Not approved!");
+            if(!approvedForAll[_from][msg.sender]) revert NotApproved();
         }
 
         nfts[_tokenId].owner = _to;
@@ -220,10 +238,7 @@ contract ColorNft is IERC721, IERC721Metadata, Ownable, ReentrancyGuard {
                     _data
                 )
             returns (bytes4 selector) {
-                require(
-                    selector == IERC721Receiver.onERC721Received.selector,
-                    "Invalid receiver"
-                );
+                if(selector != IERC721Receiver.onERC721Received.selector) revert InvalidReceiver();
             } catch Error(string memory reason) {
                 revert(reason);
             }
