@@ -27,7 +27,7 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
     error NoRoomsToProcess();
     error NothingToReclaim();
     error NoFeesToWithdraw();
-    error InsufficientNftFunding();
+    error NoClaimableRefund();
     struct Room {
         uint256 entryPrice;
         uint256 maxPlayerCount;
@@ -46,7 +46,8 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
     uint256 public lastWithdrawnRoomId;
 
     mapping(uint256 => Room) public rooms;
-    mapping(address => uint256) public nonces; 
+    mapping(address => uint256) public nonces;
+    mapping(uint256 => mapping(address => uint256)) public claimableRefunds; 
 
     event RoomCreated(uint256 indexed roomId, uint256 entryPrice, uint256 maxPlayerCount);
     event GameStarted(uint256 indexed roomId, uint256 indexed gameId);
@@ -56,6 +57,8 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
     event GameEnded(uint256 indexed roomId, uint256 indexed gameId);
     event OldRoomsWithdrawn(uint256 amount);
     event FeesWithdrawn(uint256 amount);
+    event TransferFailedAddedToFees(uint256 indexed roomId, address indexed recipient, uint256 amount);
+    event RefundClaimed(uint256 indexed roomId, address indexed player, uint256 amount);
 
     modifier onlyPlayer(uint256 roomId) {
         if(!_isPlayerInRoom(roomId, msg.sender)) revert NotPlayerInRoom();
@@ -185,42 +188,63 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
         if(recipients.length != amounts.length) revert ArrayLengthMismatch();
         if(ids.length != idAmounts.length) revert ArrayLengthMismatch();
         
-        // Only allow players or the pouch to receive rewards
-        uint256 totalReward = 0;
-        uint256 totalPouchAmount = 0;
+        // Validate recipients are players
         for (uint256 i = 0; i < recipients.length; i++) {
-            if(!_isPlayerInRoom(roomId, recipients[i]) && recipients[i] != address(colorNftPouch)) {
-                revert NotValidRecipient();
-            }
-            totalReward += amounts[i];
-            if (recipients[i] == address(colorNftPouch)) {
-                totalPouchAmount += amounts[i];
-            }
+            if(!_isPlayerInRoom(roomId, recipients[i])) revert NotValidRecipient();
         }
-        uint256 totalEntry = room.entryPrice * room.players.length;
-        if(totalReward > totalEntry) revert RewardsExceedEntryFees();
         
+        _distributeRewards(roomId, recipients, amounts, ids, idAmounts);
+        
+        emit RewardsDistributed(roomId, room.gameId, recipients, amounts);
+        _endGame(roomId);
+    }
+
+    function _distributeRewards(
+        uint256 roomId,
+        address[] calldata recipients,
+        uint256[] calldata amounts,
+        uint256[] calldata ids,
+        uint256[] calldata idAmounts
+    ) internal {
+        Room storage room = rooms[roomId];
+        
+        // Calculate player rewards
+        uint256 totalReward = 0;
+        for (uint256 i = 0; i < amounts.length; i++) {
+            totalReward += amounts[i];
+        }
+
         uint256 totalNftRewards = 0;
         for (uint256 i = 0; i < idAmounts.length; i++) {
             totalNftRewards += idAmounts[i];
         }
-        if(totalNftRewards > totalPouchAmount) revert InsufficientNftFunding();
+
+        uint256 totalEntry = room.entryPrice * room.players.length;
+        if(totalReward + totalNftRewards > totalEntry) revert RewardsExceedEntryFees();
         
-        // Distribute rewards
+        // Pay players with credit-on-failure
         for (uint256 i = 0; i < recipients.length; i++) {
-            (bool success, ) = recipients[i].call{value: amounts[i]}("");
-            if(!success) revert TransferFailed();
+            if (amounts[i] > 0) {
+                (bool success, ) = recipients[i].call{value: amounts[i]}("");
+                if (!success) {
+                    // Make claimable if transfer fails
+                    claimableRefunds[roomId][recipients[i]] += amounts[i];
+                    emit TransferFailedAddedToFees(roomId, recipients[i], amounts[i]);
+                }
+            }
         }
+        
+        // Fund pouch with exact amount and record allocations
+        if (totalNftRewards > 0) {
+            (bool nftSuccess, ) = address(colorNftPouch).call{value: totalNftRewards}("");
+            if(!nftSuccess) revert TransferFailed();
+            colorNftPouch.distributeRewards(ids, idAmounts);
+        }
+        
         // Accumulate fee as leftover
-        if (totalEntry > totalReward) {
-            feeBalance += (totalEntry - totalReward);
+        if (totalEntry > totalReward + totalNftRewards) {
+            feeBalance += (totalEntry - totalReward - totalNftRewards);
         }
-        
-        // Distribute NFT rewards
-        colorNftPouch.distributeRewards(ids, idAmounts);
-        
-        emit RewardsDistributed(roomId, room.gameId, recipients, amounts);
-        _endGame(roomId);
     }
 
     function _endGame(uint256 roomId)
@@ -279,6 +303,18 @@ contract MultiGameLobbyEth is Ownable, ReentrancyGuard {
         (bool success, ) = msg.sender.call{value: payout}("");
         if(!success) revert TransferFailed();
         emit FeesWithdrawn(payout);
+    }
+
+    function claimRefund(uint256 roomId) external roomExists(roomId) nonReentrant {
+        uint256 amount = claimableRefunds[roomId][msg.sender];
+        if(amount == 0) revert NoClaimableRefund();
+        
+        claimableRefunds[roomId][msg.sender] = 0;
+        
+        (bool success, ) = msg.sender.call{value: amount}("");
+        if(!success) revert TransferFailed();
+        
+        emit RefundClaimed(roomId, msg.sender, amount);
     }
 
     function _verify(bytes memory message, bytes memory signature)

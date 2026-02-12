@@ -76,7 +76,7 @@ contract TournamentManager is Ownable, ReentrancyGuard {
     event PlayerRefunded(uint256 indexed tournamentId, address indexed player, uint256 amountRefunded);
     event IncentiveAdded(uint256 indexed tournamentId, address indexed sponsor, uint256 amount);
     event TournamentFinalized(uint256 indexed tournamentId, uint256 totalDistributed, uint256 platformFee);
-    event TournamentCancelled(uint256 indexed tournamentId, uint256 totalRefunded);
+    event TournamentCancelled(uint256 indexed tournamentId, uint256 totalRefunded, uint256 totalClaimable);
     event PlatformFeesWithdrawn(uint256 amount);
     event TransferFailedAddedToFees(uint256 indexed tournamentId, address indexed recipient, uint256 amount);
     event RefundFailedClaimable(uint256 indexed tournamentId, address indexed player, uint256 amount);
@@ -346,9 +346,8 @@ contract TournamentManager is Ownable, ReentrancyGuard {
                 totalDistributed += playerAmounts[i];
                 (bool success, ) = winners[i].call{value: playerAmounts[i]}("");
                 if (!success) {
-                    // Add to platform fees if transfer fails (malicious/non-receivable)
-                    platformFeeBalance += playerAmounts[i];
-                    emit TransferFailedAddedToFees(tournamentId, winners[i], playerAmounts[i]);
+                    claimableRefunds[tournamentId][winners[i]] += playerAmounts[i];
+                    emit RefundFailedClaimable(tournamentId, winners[i], playerAmounts[i]);
                 }
             }
         }
@@ -394,6 +393,7 @@ contract TournamentManager is Ownable, ReentrancyGuard {
         tournament.isActive = false;
         
         uint256 totalRefunded = 0;
+        uint256 totalClaimable = 0;
         
         if (tournament.entryFee > 0) {
             address[] storage players = tournamentPlayers[tournamentId];
@@ -401,9 +401,11 @@ contract TournamentManager is Ownable, ReentrancyGuard {
                 if (hasRegistered[tournamentId][players[i]]) {
                     (bool success, ) = players[i].call{value: tournament.entryFee}("");
                     if (!success) {
-                        // Store as claimable if transfer fails (e.g., insufficient contract balance)
                         claimableRefunds[tournamentId][players[i]] += tournament.entryFee;
+                        totalClaimable += tournament.entryFee;
                         emit RefundFailedClaimable(tournamentId, players[i], tournament.entryFee);
+                    } else {
+                        totalClaimable += tournament.entryFee;
                     }
                     totalRefunded += tournament.entryFee;
                 }
@@ -421,16 +423,14 @@ contract TournamentManager is Ownable, ReentrancyGuard {
             totalRefunded += tournament.incentivePool;
         }
         
-        emit TournamentCancelled(tournamentId, totalRefunded);
+        emit TournamentCancelled(tournamentId, totalRefunded, totalClaimable);
     }
 
     /**
      * @notice Claim refund from a cancelled tournament if transfer failed
      * @param tournamentId ID of the tournament
      */
-    function claimRefund(uint256 tournamentId) external nonReentrant {
-        if(!hasRegistered[tournamentId][msg.sender]) revert NotRegistered();
-        
+    function claimRefund(uint256 tournamentId) external nonReentrant {        
         uint256 amount = claimableRefunds[tournamentId][msg.sender];
         if(amount == 0) revert NoClaimableRefund();
         
