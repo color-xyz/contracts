@@ -7,6 +7,7 @@ This is a collection of smart contracts built for the Color - RgbClash applicati
 ## Table of Contents
 
 - [Features](#features)
+- [Security Audit](#security-audit)
 - [Links](#links)
 - [License](#license)
 
@@ -17,6 +18,12 @@ This is a collection of smart contracts built for the Color - RgbClash applicati
 - **Game Contract**: Organizes games and handles the distribution of rewards to participants.
 - **Security**: Utilizes OpenZeppelin contracts to ensure robust security and best practices.
 - **Reentrancy Guard**: Protects against reentrancy attacks in critical functions.
+
+## Security Audit
+
+The smart contracts have been audited by Algiz Security in February 2026. The audit report is available at:
+- [Audit Report](contracts/audits/ColorRBGClash_Audit_Report_Algiz_022026%20(1).pdf)
+- Auditor: [Algiz Security](https://x.com/AlgizSec)
 
 ## Links
 
