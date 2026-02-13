@@ -405,9 +405,8 @@ contract TournamentManager is Ownable, ReentrancyGuard {
                         totalClaimable += tournament.entryFee;
                         emit RefundFailedClaimable(tournamentId, players[i], tournament.entryFee);
                     } else {
-                        totalClaimable += tournament.entryFee;
+                        totalRefunded += tournament.entryFee;
                     }
-                    totalRefunded += tournament.entryFee;
                 }
             }
         }
@@ -418,9 +417,11 @@ contract TournamentManager is Ownable, ReentrancyGuard {
             if (!success) {
                 // Store as claimable if transfer fails
                 claimableRefunds[tournamentId][tournament.creator] += tournament.incentivePool;
+                totalClaimable += tournament.incentivePool;
                 emit RefundFailedClaimable(tournamentId, tournament.creator, tournament.incentivePool);
+            } else {
+                totalRefunded += tournament.incentivePool;
             }
-            totalRefunded += tournament.incentivePool;
         }
         
         emit TournamentCancelled(tournamentId, totalRefunded, totalClaimable);
